@@ -58,25 +58,34 @@
     background: white;
     border-radius: 50%;
   }
+
+  @keyframes glow-pulse {
+    0%, 100% { box-shadow: 0 0 8px rgba(255,255,255,0.3); }
+    50% { box-shadow: 0 0 20px rgba(255,255,255,0.6); }
+  }
+  .active-glow { animation: glow-pulse 2s ease-in-out infinite; }
 </style>
 </head>
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
-// ─── Schedule Definition ───
-const SCHEDULE = [
-  { start: [7, 0],   end: [7, 30],  meal: 'Breakfast',  type: 'green' },
-  { start: [7, 30],  end: [9, 30],  meal: null,         type: 'red' },
-  { start: [9, 30],  end: [9, 50],  meal: 'Snack 1',    type: 'green' },
-  { start: [9, 50],  end: [12, 0],  meal: null,         type: 'red' },
-  { start: [12, 0],  end: [13, 0],  meal: 'Lunch',      type: 'green' },
-  { start: [13, 0],  end: [14, 30], meal: null,         type: 'red' },
-  { start: [14, 30], end: [14, 50], meal: 'Snack 2',    type: 'green' },
-  { start: [14, 50], end: [17, 0],  meal: null,         type: 'red' },
-  { start: [17, 0],  end: [18, 30], meal: 'Dinner',     type: 'green' },
-  { start: [18, 30], end: [7, 0],   meal: null,         type: 'red' },  // overnight
+// ─── Default Schedules ───
+const DEFAULT_WEEKDAY = [
+  { meal: 'Breakfast', startH: 7, startM: 0, duration: 30 },
+  { meal: 'Snack 1', startH: 9, startM: 30, duration: 20 },
+  { meal: 'Lunch', startH: 12, startM: 0, duration: 60 },
+  { meal: 'Snack 2', startH: 14, startM: 30, duration: 20 },
+  { meal: 'Dinner', startH: 17, startM: 0, duration: 90 },
+];
+
+const DEFAULT_WEEKEND = [
+  { meal: 'Breakfast', startH: 8, startM: 30, duration: 30 },
+  { meal: 'Snack 1', startH: 11, startM: 0, duration: 20 },
+  { meal: 'Lunch', startH: 13, startM: 30, duration: 60 },
+  { meal: 'Snack 2', startH: 16, startM: 0, duration: 20 },
+  { meal: 'Dinner', startH: 18, startM: 30, duration: 90 },
 ];
 
 const YELLOW_MINUTES = 5;
@@ -87,38 +96,95 @@ const RED_REMINDERS = [
   { icon: "\u{1FAC1}", text: "Coherent breathing: 5\u20136 breaths/min for 2 minutes" },
 ];
 
+// ─── Settings helpers ───
+function loadSettings() {
+  try {
+    const raw = localStorage.getItem('metgreen-settings');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return null;
+}
+
+function saveSettings(settings) {
+  localStorage.setItem('metgreen-settings', JSON.stringify(settings));
+}
+
+function getDefaultSettings() {
+  return {
+    weekdayMeals: DEFAULT_WEEKDAY.map(m => ({ ...m })),
+    weekendEnabled: false,
+    weekendMeals: DEFAULT_WEEKEND.map(m => ({ ...m })),
+  };
+}
+
+// ─── Build SCHEDULE array from meal configs ───
+function buildSchedule(meals) {
+  const sorted = [...meals].sort((a, b) => (a.startH * 60 + a.startM) - (b.startH * 60 + b.startM));
+  const schedule = [];
+
+  for (let i = 0; i < sorted.length; i++) {
+    const m = sorted[i];
+    const startMin = m.startH * 60 + m.startM;
+    const endMin = startMin + m.duration;
+    const endH = Math.floor(endMin / 60) % 24;
+    const endM = endMin % 60;
+
+    // Red gap before this meal
+    if (i === 0) {
+      // Overnight red from last meal end to this meal start
+      const lastMeal = sorted[sorted.length - 1];
+      const lastEndMin = lastMeal.startH * 60 + lastMeal.startM + lastMeal.duration;
+      const lastEndH = Math.floor(lastEndMin / 60) % 24;
+      const lastEndM = lastEndMin % 60;
+      if (lastEndH !== m.startH || lastEndM !== m.startM) {
+        schedule.push({ start: [lastEndH, lastEndM], end: [m.startH, m.startM], meal: null, type: 'red' });
+      }
+    } else {
+      const prev = sorted[i - 1];
+      const prevEndMin = prev.startH * 60 + prev.startM + prev.duration;
+      const prevEndH = Math.floor(prevEndMin / 60) % 24;
+      const prevEndM = prevEndMin % 60;
+      if (prevEndH !== m.startH || prevEndM !== m.startM) {
+        schedule.push({ start: [prevEndH, prevEndM], end: [m.startH, m.startM], meal: null, type: 'red' });
+      }
+    }
+
+    // Green meal
+    schedule.push({ start: [m.startH, m.startM], end: [endH, endM], meal: m.meal, type: 'green' });
+  }
+
+  return schedule;
+}
+
 function toMinutes([h, m]) { return h * 60 + m; }
 
-function getCurrentSlot(now) {
+function getCurrentSlot(now, schedule) {
   const currentMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
 
-  for (let i = 0; i < SCHEDULE.length; i++) {
-    const slot = SCHEDULE[i];
+  for (let i = 0; i < schedule.length; i++) {
+    const slot = schedule[i];
     const startMin = toMinutes(slot.start);
     const endMin = toMinutes(slot.end);
 
     if (endMin > startMin) {
-      // Normal slot
       if (currentMin >= startMin && currentMin < endMin) {
         return { ...slot, index: i };
       }
     } else {
-      // Overnight slot (crosses midnight)
       if (currentMin >= startMin || currentMin < endMin) {
         return { ...slot, index: i };
       }
     }
   }
-  // Fallback to overnight
-  return { ...SCHEDULE[SCHEDULE.length - 1], index: SCHEDULE.length - 1 };
+  return { ...schedule[schedule.length - 1], index: schedule.length - 1 };
 }
 
-function getNextGreenSlot(currentIndex) {
-  for (let i = 1; i <= SCHEDULE.length; i++) {
-    const idx = (currentIndex + i) % SCHEDULE.length;
-    if (SCHEDULE[idx].type === 'green') return SCHEDULE[idx];
+function getNextGreenSlot(currentIndex, schedule) {
+  for (let i = 1; i <= schedule.length; i++) {
+    const idx = (currentIndex + i) % schedule.length;
+    if (schedule[idx].type === 'green') return schedule[idx];
   }
-  return SCHEDULE[0];
+  return schedule[0];
 }
 
 function getSecondsUntil(now, target) {
@@ -143,8 +209,88 @@ function formatTime([h, m]) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+function isWeekend() {
+  const day = new Date().getDay();
+  return day === 0 || day === 6;
+}
+
+// ─── Notification Manager ───
+function useNotifications(schedule) {
+  const timersRef = useRef([]);
+
+  const scheduleNotifications = useCallback(() => {
+    // Clear old timers
+    timersRef.current.forEach(t => clearTimeout(t));
+    timersRef.current = [];
+
+    if (Notification.permission !== 'granted') return;
+
+    const now = new Date();
+
+    schedule.forEach((slot, i) => {
+      const startMin = toMinutes(slot.start);
+      const notifyMin = startMin - 2; // 2 min before
+
+      let notifyDate = new Date(now);
+      let notifyH = Math.floor(((notifyMin % 1440) + 1440) % 1440 / 60);
+      let notifyM = ((notifyMin % 1440) + 1440) % 1440 % 60;
+      notifyDate.setHours(notifyH, notifyM, 0, 0);
+      if (notifyDate <= now) notifyDate.setDate(notifyDate.getDate() + 1);
+
+      const delay = notifyDate - now;
+      if (delay > 0 && delay < 24 * 60 * 60 * 1000) {
+        let body;
+        if (slot.type === 'green') {
+          body = `${slot.meal} window opens in 2 min \u{1F7E2}`;
+        } else {
+          // Find what comes after this red slot
+          const nextIdx = (i + 1) % schedule.length;
+          const next = schedule[nextIdx];
+          if (next && next.type === 'green') {
+            body = `Eating window closing soon \u{26A0}\u{FE0F}`;
+          } else {
+            body = `Fasting time \u2014 stay hydrated \u{1F534}`;
+          }
+        }
+
+        // Try to use service worker for notifications, fall back to direct
+        const timer = setTimeout(() => {
+          if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.controller.postMessage({
+              type: 'SCHEDULE_NOTIFICATION',
+              title: 'Metabolic Greenlights',
+              body: body,
+              delay: 0
+            });
+          } else {
+            new Notification('Metabolic Greenlights', { body: body });
+          }
+        }, delay);
+
+        timersRef.current.push(timer);
+      }
+    });
+  }, [schedule]);
+
+  useEffect(() => {
+    scheduleNotifications();
+    // Reschedule every hour
+    const interval = setInterval(scheduleNotifications, 60 * 60 * 1000);
+    return () => {
+      clearInterval(interval);
+      timersRef.current.forEach(t => clearTimeout(t));
+    };
+  }, [scheduleNotifications]);
+}
+
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
 // ─── Main Traffic Light Screen ───
-function MainScreen() {
+function MainScreen({ schedule, isWeekendMode }) {
   const [now, setNow] = useState(new Date());
   const [reminderIndex, setReminderIndex] = useState(0);
   const [reminderVisible, setReminderVisible] = useState(true);
@@ -154,7 +300,6 @@ function MainScreen() {
     return () => clearInterval(timer);
   }, []);
 
-  // Rotate reminders every 30s with fade
   useEffect(() => {
     const interval = setInterval(() => {
       setReminderVisible(false);
@@ -166,7 +311,7 @@ function MainScreen() {
     return () => clearInterval(interval);
   }, []);
 
-  const slot = getCurrentSlot(now);
+  const slot = getCurrentSlot(now, schedule);
   const secondsToEnd = getSecondsUntil(now, slot.end);
   const isYellow = slot.type === 'green' && secondsToEnd <= YELLOW_MINUTES * 60 && secondsToEnd > 0;
 
@@ -182,32 +327,36 @@ function MainScreen() {
     bgClass = 'bg-red-900';
   }
 
-  const nextGreen = state === 'red' ? getNextGreenSlot(slot.index) : null;
+  const nextGreen = state === 'red' ? getNextGreenSlot(slot.index, schedule) : null;
   const secondsToNextGreen = nextGreen ? getSecondsUntil(now, nextGreen.start) : 0;
   const reminder = RED_REMINDERS[reminderIndex];
 
   return (
     <div className={`${bgClass} bg-transition w-full h-full flex flex-col items-center justify-center px-6 text-white relative overflow-hidden`}>
 
+      {/* Weekend mode badge */}
+      {isWeekendMode && (
+        <div className="absolute top-4 right-4 bg-indigo-600/80 backdrop-blur px-3 py-1 rounded-full text-xs font-medium"
+             style={{ marginTop: 'env(safe-area-inset-top, 0px)' }}>
+          Weekend Mode {"\u{1F319}"}
+        </div>
+      )}
+
       {/* GREEN STATE */}
       {state === 'green' && (
         <div className="flex flex-col items-center text-center space-y-6 max-w-sm">
-          {/* Pulsing circle */}
           <div className="pulse-green w-32 h-32 rounded-full bg-green-400/40 flex items-center justify-center shadow-lg shadow-green-500/20">
             <div className="w-24 h-24 rounded-full bg-green-400/60 flex items-center justify-center">
               <div className="w-16 h-16 rounded-full bg-green-300"></div>
             </div>
           </div>
 
-          {/* Meal name */}
           <h1 className="text-4xl font-bold tracking-tight">{slot.meal}</h1>
 
-          {/* Timer */}
           <div className="text-lg opacity-90">
             Window closes in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToEnd)}</span>
           </div>
 
-          {/* Food order */}
           <div className="flex items-center justify-center gap-3 mt-4">
             <div className="flex flex-col items-center">
               <span className="text-3xl">{"\u{1F966}"}</span>
@@ -228,7 +377,6 @@ function MainScreen() {
             </div>
           </div>
 
-          {/* Tip */}
           <p className="text-sm opacity-70 mt-4 italic">
             Start with a tablespoon of apple cider vinegar in water
           </p>
@@ -272,7 +420,6 @@ function MainScreen() {
             Next window opens in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToNextGreen)}</span>
           </div>
 
-          {/* Rotating reminders */}
           <div className="mt-8 h-20 flex items-center justify-center">
             <div
               className="flex flex-col items-center text-center transition-all duration-500"
@@ -289,7 +436,7 @@ function MainScreen() {
 }
 
 // ─── Schedule Screen ───
-function ScheduleScreen() {
+function ScheduleScreen({ schedule }) {
   const [now, setNow] = useState(new Date());
 
   useEffect(() => {
@@ -298,8 +445,7 @@ function ScheduleScreen() {
   }, []);
 
   const currentMin = now.getHours() * 60 + now.getMinutes();
-  // Day runs 07:00 to 07:00 next day = 1440 total minutes
-  const dayStartMin = 7 * 60; // 07:00
+  const dayStartMin = 7 * 60;
   const totalDayMin = 24 * 60;
 
   function getTopPercent(timeArr) {
@@ -317,7 +463,6 @@ function ScheduleScreen() {
     return (duration / totalDayMin) * 100;
   }
 
-  // Current time indicator position
   let nowOffset = currentMin - dayStartMin;
   if (nowOffset < 0) nowOffset += totalDayMin;
   const nowPercent = (nowOffset / totalDayMin) * 100;
@@ -331,7 +476,6 @@ function ScheduleScreen() {
 
       <div className="flex-1 overflow-y-auto px-4 pb-24">
         <div className="relative" style={{ height: '900px' }}>
-          {/* Time labels on left */}
           {Array.from({ length: 25 }, (_, i) => {
             const hour = (7 + i) % 24;
             const topPct = (i / 24) * 100;
@@ -346,12 +490,11 @@ function ScheduleScreen() {
             );
           })}
 
-          {/* Schedule blocks */}
-          {SCHEDULE.map((slot, i) => {
+          {schedule.map((slot, i) => {
             const top = getTopPercent(slot.start);
             const height = getHeightPercent(slot.start, slot.end);
             const isGreen = slot.type === 'green';
-            const isActive = getCurrentSlot(now).index === i;
+            const isActive = getCurrentSlot(now, schedule).index === i;
 
             return (
               <div
@@ -360,7 +503,7 @@ function ScheduleScreen() {
                   isGreen
                     ? 'bg-emerald-900/60 border-emerald-600/40'
                     : 'bg-red-950/40 border-red-900/30'
-                } ${isActive ? 'ring-2 ring-white/50' : ''}`}
+                } ${isActive ? 'ring-2 ring-white/50 active-glow' : ''}`}
                 style={{ top: `${top}%`, height: `${Math.max(height, 2.5)}%` }}
               >
                 <div className="flex justify-between items-start">
@@ -386,13 +529,177 @@ function ScheduleScreen() {
             );
           })}
 
-          {/* Current time indicator */}
           <div className="timeline-now" style={{ top: `${nowPercent}%` }}>
             <span className="absolute right-0 -top-3 text-[9px] text-white font-mono bg-white/20 px-1 rounded">
               NOW
             </span>
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings Screen ───
+function SettingsScreen({ settings, onSave }) {
+  const [weekdayMeals, setWeekdayMeals] = useState(settings.weekdayMeals.map(m => ({ ...m })));
+  const [weekendEnabled, setWeekendEnabled] = useState(settings.weekendEnabled);
+  const [weekendMeals, setWeekendMeals] = useState(settings.weekendMeals.map(m => ({ ...m })));
+  const [notifPermission, setNotifPermission] = useState(
+    'Notification' in window ? Notification.permission : 'denied'
+  );
+
+  function updateMeal(list, setList, idx, field, value) {
+    const copy = list.map(m => ({ ...m }));
+    copy[idx][field] = parseInt(value, 10) || 0;
+    setList(copy);
+    doSave(list === weekdayMeals ? copy : weekdayMeals, list === weekendMeals ? copy : weekendMeals, weekendEnabled);
+  }
+
+  function doSave(wd, we, weEnabled) {
+    const s = { weekdayMeals: wd, weekendMeals: we, weekendEnabled: weEnabled };
+    saveSettings(s);
+    onSave(s);
+  }
+
+  function toggleWeekend() {
+    const val = !weekendEnabled;
+    setWeekendEnabled(val);
+    doSave(weekdayMeals, weekendMeals, val);
+  }
+
+  function resetDefaults() {
+    const def = getDefaultSettings();
+    setWeekdayMeals(def.weekdayMeals);
+    setWeekendMeals(def.weekendMeals);
+    setWeekendEnabled(def.weekendEnabled);
+    doSave(def.weekdayMeals, def.weekendMeals, def.weekendEnabled);
+  }
+
+  function handleRequestNotif() {
+    if ('Notification' in window) {
+      Notification.requestPermission().then(p => setNotifPermission(p));
+    }
+  }
+
+  function formatTimeInput(h, m) {
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+
+  function handleTimeChange(list, setList, idx, timeStr) {
+    const [h, m] = timeStr.split(':').map(Number);
+    const copy = list.map(ml => ({ ...ml }));
+    copy[idx].startH = h;
+    copy[idx].startM = m;
+    setList(copy);
+    doSave(list === weekdayMeals ? copy : weekdayMeals, list === weekendMeals ? copy : weekendMeals, weekendEnabled);
+  }
+
+  function MealEditor({ meals, setMeals, label }) {
+    return (
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">{label}</h3>
+        {meals.map((meal, idx) => (
+          <div key={idx} className="bg-gray-800/60 rounded-lg p-3 space-y-2">
+            <div className="text-sm font-medium text-emerald-400">{meal.meal}</div>
+            <div className="flex items-center gap-3">
+              <div className="flex-1">
+                <label className="text-[10px] text-gray-500 block mb-1">Start Time</label>
+                <input
+                  type="time"
+                  value={formatTimeInput(meal.startH, meal.startM)}
+                  onChange={(e) => handleTimeChange(meals, setMeals, idx, e.target.value)}
+                  className="w-full bg-gray-700 text-white text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-emerald-500 outline-none"
+                />
+              </div>
+              <div className="w-24">
+                <label className="text-[10px] text-gray-500 block mb-1">Duration (min)</label>
+                <input
+                  type="number"
+                  min="5"
+                  max="180"
+                  value={meal.duration}
+                  onChange={(e) => updateMeal(meals, setMeals, idx, 'duration', e.target.value)}
+                  className="w-full bg-gray-700 text-white text-sm rounded px-2 py-1.5 border border-gray-600 focus:border-emerald-500 outline-none"
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-full bg-gray-950 text-white flex flex-col">
+      <div className="px-4 pt-6 pb-3">
+        <h2 className="text-xl font-bold">Settings</h2>
+        <p className="text-sm text-gray-400 mt-1">Customize your metabolic schedule</p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 pb-24 space-y-6">
+
+        {/* Notifications */}
+        <div className="bg-gray-900/60 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wide">Notifications</h3>
+          {notifPermission === 'granted' ? (
+            <div className="flex items-center gap-2 text-sm text-emerald-400">
+              <span>{"\u{2705}"}</span>
+              <span>Notifications enabled</span>
+            </div>
+          ) : notifPermission === 'denied' ? (
+            <p className="text-sm text-red-400">Notifications blocked. Enable in browser/system settings.</p>
+          ) : (
+            <button
+              onClick={handleRequestNotif}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-lg transition-colors"
+            >
+              Enable Push Notifications
+            </button>
+          )}
+          <p className="text-[11px] text-gray-500">Get notified 2 min before each schedule change</p>
+        </div>
+
+        {/* Weekend Mode */}
+        <div className="bg-gray-900/60 rounded-xl p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h3 className="text-sm font-semibold text-gray-300">Weekend Mode {"\u{1F319}"}</h3>
+              <p className="text-[11px] text-gray-500 mt-1">Later schedule for Sat & Sun</p>
+            </div>
+            <button
+              onClick={toggleWeekend}
+              className={`relative w-12 h-7 rounded-full transition-colors ${weekendEnabled ? 'bg-emerald-500' : 'bg-gray-600'}`}
+            >
+              <div
+                className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${weekendEnabled ? 'translate-x-5' : 'translate-x-0.5'}`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Weekday Schedule */}
+        <div className="bg-gray-900/60 rounded-xl p-4">
+          <MealEditor meals={weekdayMeals} setMeals={setWeekdayMeals} label="Weekday Schedule (Mon-Fri)" />
+        </div>
+
+        {/* Weekend Schedule */}
+        {weekendEnabled && (
+          <div className="bg-gray-900/60 rounded-xl p-4">
+            <MealEditor meals={weekendMeals} setMeals={setWeekendMeals} label="Weekend Schedule (Sat-Sun)" />
+          </div>
+        )}
+
+        {/* Reset */}
+        <button
+          onClick={resetDefaults}
+          className="w-full bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium py-3 rounded-xl transition-colors border border-gray-700"
+        >
+          Reset to Defaults
+        </button>
+
+        {/* Version */}
+        <p className="text-center text-[10px] text-gray-600 pb-4">Metabolic Greenlights v1.1</p>
       </div>
     </div>
   );
@@ -432,17 +739,41 @@ function InstallBanner() {
 // ─── App Root ───
 function App() {
   const [screen, setScreen] = useState('home');
+  const [settings, setSettings] = useState(() => loadSettings() || getDefaultSettings());
+
+  const weekendActive = settings.weekendEnabled && isWeekend();
+  const activeMeals = weekendActive ? settings.weekendMeals : settings.weekdayMeals;
+  const schedule = useMemo(() => buildSchedule(activeMeals), [activeMeals]);
+
+  // Request notification permission on first launch
+  useEffect(() => {
+    const asked = localStorage.getItem('metgreen-notif-asked');
+    if (!asked) {
+      localStorage.setItem('metgreen-notif-asked', '1');
+      // Slight delay so page loads first
+      setTimeout(requestNotificationPermission, 2000);
+    }
+  }, []);
+
+  // Schedule push notifications
+  useNotifications(schedule);
+
+  function handleSettingsSave(newSettings) {
+    setSettings({ ...newSettings });
+  }
 
   return (
     <div className="w-full h-full flex flex-col">
       <InstallBanner />
-      {/* Screen content */}
       <div className="flex-1 relative overflow-hidden">
         <div style={{ display: screen === 'home' ? 'block' : 'none', height: '100%' }}>
-          <MainScreen />
+          <MainScreen schedule={schedule} isWeekendMode={weekendActive} />
         </div>
         <div style={{ display: screen === 'schedule' ? 'block' : 'none', height: '100%' }}>
-          <ScheduleScreen />
+          <ScheduleScreen schedule={schedule} />
+        </div>
+        <div style={{ display: screen === 'settings' ? 'block' : 'none', height: '100%' }}>
+          <SettingsScreen settings={settings} onSave={handleSettingsSave} />
         </div>
       </div>
 
@@ -451,7 +782,7 @@ function App() {
            style={{ height: '60px', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
         <button
           onClick={() => setScreen('home')}
-          className={`flex flex-col items-center gap-0.5 px-6 py-2 rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-4 py-2 rounded-lg transition-colors ${
             screen === 'home' ? 'text-emerald-400' : 'text-gray-500'
           }`}
         >
@@ -460,12 +791,21 @@ function App() {
         </button>
         <button
           onClick={() => setScreen('schedule')}
-          className={`flex flex-col items-center gap-0.5 px-6 py-2 rounded-lg transition-colors ${
+          className={`flex flex-col items-center gap-0.5 px-4 py-2 rounded-lg transition-colors ${
             screen === 'schedule' ? 'text-emerald-400' : 'text-gray-500'
           }`}
         >
           <span className="text-xl">{"\u{1F4C5}"}</span>
           <span className="text-[10px] font-medium">Schedule</span>
+        </button>
+        <button
+          onClick={() => setScreen('settings')}
+          className={`flex flex-col items-center gap-0.5 px-4 py-2 rounded-lg transition-colors ${
+            screen === 'settings' ? 'text-emerald-400' : 'text-gray-500'
+          }`}
+        >
+          <span className="text-xl">{"\u{2699}\u{FE0F}"}</span>
+          <span className="text-[10px] font-medium">Settings</span>
         </button>
       </div>
     </div>

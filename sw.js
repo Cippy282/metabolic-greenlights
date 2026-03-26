@@ -1,4 +1,4 @@
-const CACHE_NAME = 'metgreen-v1';
+const CACHE_NAME = 'metgreen-v1.1';
 const ASSETS = [
   './',
   './index.html',
@@ -44,4 +44,34 @@ self.addEventListener('fetch', (event) => {
       });
     })
   );
+});
+
+// Handle notification clicks
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      if (clients.length > 0) {
+        return clients[0].focus();
+      }
+      return self.clients.openWindow('./index.html');
+    })
+  );
+});
+
+// Handle scheduled notification messages from main app
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SCHEDULE_NOTIFICATION') {
+    const { title, body, delay } = event.data;
+    setTimeout(() => {
+      self.registration.showNotification(title, {
+        body: body,
+        icon: './icon-192.png',
+        badge: './icon-192.png',
+        vibrate: [200, 100, 200],
+        tag: 'metgreen-transition',
+        renotify: true
+      });
+    }, delay);
+  }
 });
