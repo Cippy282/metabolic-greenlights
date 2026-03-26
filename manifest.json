@@ -1,0 +1,22 @@
+{
+  "name": "Metabolic Greenlights",
+  "short_name": "MetGreen",
+  "description": "Metabolic planning app with traffic light interface",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#8B0000",
+  "theme_color": "#1a1a1a",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

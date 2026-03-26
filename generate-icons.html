@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head><title>Generate Icons</title></head>
+<body>
+<p>Generating icons... check console and download links below.</p>
+<canvas id="c512" width="512" height="512"></canvas>
+<canvas id="c192" width="192" height="192"></canvas>
+<br>
+<a id="dl512" download="icon-512.png">Download 512x512</a><br>
+<a id="dl192" download="icon-192.png">Download 192x192</a>
+<script>
+function drawIcon(canvas, size) {
+  const ctx = canvas.getContext('2d');
+  // Dark background
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, size, size);
+  // Rounded rect mask
+  const r = size * 0.18;
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.lineTo(size - r, 0);
+  ctx.quadraticCurveTo(size, 0, size, r);
+  ctx.lineTo(size, size - r);
+  ctx.quadraticCurveTo(size, size, size - r, size);
+  ctx.lineTo(r, size);
+  ctx.quadraticCurveTo(0, size, 0, size - r);
+  ctx.lineTo(0, r);
+  ctx.quadraticCurveTo(0, 0, r, 0);
+  ctx.closePath();
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fill();
+  ctx.clip();
+
+  // Traffic light body
+  const bodyW = size * 0.36;
+  const bodyH = size * 0.7;
+  const bodyX = (size - bodyW) / 2;
+  const bodyY = (size - bodyH) / 2;
+  const bodyR = size * 0.06;
+  ctx.beginPath();
+  ctx.moveTo(bodyX + bodyR, bodyY);
+  ctx.lineTo(bodyX + bodyW - bodyR, bodyY);
+  ctx.quadraticCurveTo(bodyX + bodyW, bodyY, bodyX + bodyW, bodyY + bodyR);
+  ctx.lineTo(bodyX + bodyW, bodyY + bodyH - bodyR);
+  ctx.quadraticCurveTo(bodyX + bodyW, bodyY + bodyH, bodyX + bodyW - bodyR, bodyY + bodyH);
+  ctx.lineTo(bodyX + bodyR, bodyY + bodyH);
+  ctx.quadraticCurveTo(bodyX, bodyY + bodyH, bodyX, bodyY + bodyH - bodyR);
+  ctx.lineTo(bodyX, bodyY + bodyR);
+  ctx.quadraticCurveTo(bodyX, bodyY, bodyX + bodyR, bodyY);
+  ctx.closePath();
+  ctx.fillStyle = '#2a2a2a';
+  ctx.fill();
+
+  // Three circles
+  const circleR = size * 0.1;
+  const cx = size / 2;
+  const gap = bodyH / 4;
+
+  // Red (dim)
+  ctx.beginPath();
+  ctx.arc(cx, bodyY + gap, circleR, 0, Math.PI * 2);
+  ctx.fillStyle = '#5c1a1a';
+  ctx.fill();
+
+  // Yellow (dim)
+  ctx.beginPath();
+  ctx.arc(cx, bodyY + gap * 2, circleR, 0, Math.PI * 2);
+  ctx.fillStyle = '#5c4a1a';
+  ctx.fill();
+
+  // Green (bright, glowing)
+  ctx.beginPath();
+  ctx.arc(cx, bodyY + gap * 3, circleR * 1.3, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(74, 222, 128, 0.2)';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(cx, bodyY + gap * 3, circleR, 0, Math.PI * 2);
+  const grd = ctx.createRadialGradient(cx, bodyY + gap * 3, 0, cx, bodyY + gap * 3, circleR);
+  grd.addColorStop(0, '#86efac');
+  grd.addColorStop(1, '#22c55e');
+  ctx.fillStyle = grd;
+  ctx.fill();
+}
+
+drawIcon(document.getElementById('c512'), 512);
+drawIcon(document.getElementById('c192'), 192);
+
+document.getElementById('dl512').href = document.getElementById('c512').toDataURL('image/png');
+document.getElementById('dl192').href = document.getElementById('c192').toDataURL('image/png');
+</script>
+</body>
+</html>

@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MetGreen">
+<meta name="theme-color" content="#1a1a1a">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-512.png">
+<title>Metabolic Greenlights</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body, #root { height: 100%; width: 100%; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif; }
+
+  @keyframes pulse-green {
+    0%, 100% { transform: scale(1); opacity: 0.9; }
+    50% { transform: scale(1.05); opacity: 1; }
+  }
+  @keyframes pulse-yellow {
+    0%, 100% { transform: scale(1); opacity: 0.85; }
+    50% { transform: scale(1.08); opacity: 1; }
+  }
+  @keyframes pulse-red {
+    0%, 100% { transform: scale(1); opacity: 0.8; }
+    50% { transform: scale(1.03); opacity: 0.95; }
+  }
+  .pulse-green { animation: pulse-green 2.5s ease-in-out infinite; }
+  .pulse-yellow { animation: pulse-yellow 1.2s ease-in-out infinite; }
+  .pulse-red { animation: pulse-red 3s ease-in-out infinite; }
+
+  .fade-enter { opacity: 0; transform: translateY(8px); }
+  .fade-enter-active { opacity: 1; transform: translateY(0); transition: all 0.6s ease; }
+  .fade-exit { opacity: 1; }
+  .fade-exit-active { opacity: 0; transition: opacity 0.4s ease; }
+
+  .bg-transition { transition: background-color 1.5s ease; }
+
+  .timeline-now {
+    position: absolute;
+    left: 0; right: 0;
+    height: 2px;
+    background: white;
+    box-shadow: 0 0 8px rgba(255,255,255,0.8);
+    z-index: 10;
+  }
+  .timeline-now::before {
+    content: '';
+    position: absolute;
+    left: -6px; top: -4px;
+    width: 10px; height: 10px;
+    background: white;
+    border-radius: 50%;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+// ─── Schedule Definition ───
+const SCHEDULE = [
+  { start: [7, 0],   end: [7, 30],  meal: 'Breakfast',  type: 'green' },
+  { start: [7, 30],  end: [9, 30],  meal: null,         type: 'red' },
+  { start: [9, 30],  end: [9, 50],  meal: 'Snack 1',    type: 'green' },
+  { start: [9, 50],  end: [12, 0],  meal: null,         type: 'red' },
+  { start: [12, 0],  end: [13, 0],  meal: 'Lunch',      type: 'green' },
+  { start: [13, 0],  end: [14, 30], meal: null,         type: 'red' },
+  { start: [14, 30], end: [14, 50], meal: 'Snack 2',    type: 'green' },
+  { start: [14, 50], end: [17, 0],  meal: null,         type: 'red' },
+  { start: [17, 0],  end: [18, 30], meal: 'Dinner',     type: 'green' },
+  { start: [18, 30], end: [7, 0],   meal: null,         type: 'red' },  // overnight
+];
+
+const YELLOW_MINUTES = 5;
+
+const RED_REMINDERS = [
+  { icon: "\u{1F4A7}", text: "Hydrate now \u2014 drink a glass of water" },
+  { icon: "\u{1F6B6}", text: "10-min walk activates GLUT4 \u2014 no insulin needed" },
+  { icon: "\u{1FAC1}", text: "Coherent breathing: 5\u20136 breaths/min for 2 minutes" },
+];
+
+function toMinutes([h, m]) { return h * 60 + m; }
+
+function getCurrentSlot(now) {
+  const currentMin = now.getHours() * 60 + now.getMinutes() + now.getSeconds() / 60;
+
+  for (let i = 0; i < SCHEDULE.length; i++) {
+    const slot = SCHEDULE[i];
+    const startMin = toMinutes(slot.start);
+    const endMin = toMinutes(slot.end);
+
+    if (endMin > startMin) {
+      // Normal slot
+      if (currentMin >= startMin && currentMin < endMin) {
+        return { ...slot, index: i };
+      }
+    } else {
+      // Overnight slot (crosses midnight)
+      if (currentMin >= startMin || currentMin < endMin) {
+        return { ...slot, index: i };
+      }
+    }
+  }
+  // Fallback to overnight
+  return { ...SCHEDULE[SCHEDULE.length - 1], index: SCHEDULE.length - 1 };
+}
+
+function getNextGreenSlot(currentIndex) {
+  for (let i = 1; i <= SCHEDULE.length; i++) {
+    const idx = (currentIndex + i) % SCHEDULE.length;
+    if (SCHEDULE[idx].type === 'green') return SCHEDULE[idx];
+  }
+  return SCHEDULE[0];
+}
+
+function getSecondsUntil(now, target) {
+  const [th, tm] = target;
+  let targetDate = new Date(now);
+  targetDate.setHours(th, tm, 0, 0);
+  if (targetDate <= now) targetDate.setDate(targetDate.getDate() + 1);
+  return Math.max(0, Math.floor((targetDate - now) / 1000));
+}
+
+function formatTimer(totalSeconds) {
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  if (h > 0) {
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function formatTime([h, m]) {
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+}
+
+// ─── Main Traffic Light Screen ───
+function MainScreen() {
+  const [now, setNow] = useState(new Date());
+  const [reminderIndex, setReminderIndex] = useState(0);
+  const [reminderVisible, setReminderVisible] = useState(true);
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Rotate reminders every 30s with fade
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setReminderVisible(false);
+      setTimeout(() => {
+        setReminderIndex(prev => (prev + 1) % RED_REMINDERS.length);
+        setReminderVisible(true);
+      }, 400);
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const slot = getCurrentSlot(now);
+  const secondsToEnd = getSecondsUntil(now, slot.end);
+  const isYellow = slot.type === 'green' && secondsToEnd <= YELLOW_MINUTES * 60 && secondsToEnd > 0;
+
+  let state, bgClass;
+  if (isYellow) {
+    state = 'yellow';
+    bgClass = 'bg-amber-500';
+  } else if (slot.type === 'green') {
+    state = 'green';
+    bgClass = 'bg-emerald-600';
+  } else {
+    state = 'red';
+    bgClass = 'bg-red-900';
+  }
+
+  const nextGreen = state === 'red' ? getNextGreenSlot(slot.index) : null;
+  const secondsToNextGreen = nextGreen ? getSecondsUntil(now, nextGreen.start) : 0;
+  const reminder = RED_REMINDERS[reminderIndex];
+
+  return (
+    <div className={`${bgClass} bg-transition w-full h-full flex flex-col items-center justify-center px-6 text-white relative overflow-hidden`}>
+
+      {/* GREEN STATE */}
+      {state === 'green' && (
+        <div className="flex flex-col items-center text-center space-y-6 max-w-sm">
+          {/* Pulsing circle */}
+          <div className="pulse-green w-32 h-32 rounded-full bg-green-400/40 flex items-center justify-center shadow-lg shadow-green-500/20">
+            <div className="w-24 h-24 rounded-full bg-green-400/60 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-green-300"></div>
+            </div>
+          </div>
+
+          {/* Meal name */}
+          <h1 className="text-4xl font-bold tracking-tight">{slot.meal}</h1>
+
+          {/* Timer */}
+          <div className="text-lg opacity-90">
+            Window closes in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToEnd)}</span>
+          </div>
+
+          {/* Food order */}
+          <div className="flex items-center justify-center gap-3 mt-4">
+            <div className="flex flex-col items-center">
+              <span className="text-3xl">{"\u{1F966}"}</span>
+              <span className="text-xs mt-1 opacity-80">First</span>
+              <span className="text-[10px] opacity-60">Fiber & Veggies</span>
+            </div>
+            <span className="text-xl opacity-50">{"\u{2192}"}</span>
+            <div className="flex flex-col items-center">
+              <span className="text-3xl">{"\u{1F969}"}</span>
+              <span className="text-xs mt-1 opacity-80">Second</span>
+              <span className="text-[10px] opacity-60">Protein & Fat</span>
+            </div>
+            <span className="text-xl opacity-50">{"\u{2192}"}</span>
+            <div className="flex flex-col items-center">
+              <span className="text-3xl">{"\u{1F35E}"}</span>
+              <span className="text-xs mt-1 opacity-80">Last</span>
+              <span className="text-[10px] opacity-60">Carbs</span>
+            </div>
+          </div>
+
+          {/* Tip */}
+          <p className="text-sm opacity-70 mt-4 italic">
+            Start with a tablespoon of apple cider vinegar in water
+          </p>
+        </div>
+      )}
+
+      {/* YELLOW STATE */}
+      {state === 'yellow' && (
+        <div className="flex flex-col items-center text-center space-y-6 max-w-sm">
+          <div className="pulse-yellow w-32 h-32 rounded-full bg-yellow-300/40 flex items-center justify-center">
+            <div className="w-24 h-24 rounded-full bg-yellow-300/60 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-yellow-200"></div>
+            </div>
+          </div>
+
+          <div className="text-5xl">{"\u{26A0}\u{FE0F}"}</div>
+          <h1 className="text-2xl font-bold">Last 5 minutes</h1>
+          <p className="text-lg opacity-90">Eating window closing soon</p>
+
+          <div className="text-lg">
+            Window closes in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToEnd)}</span>
+          </div>
+
+          <p className="text-sm opacity-70 italic">Light snack only if needed</p>
+        </div>
+      )}
+
+      {/* RED STATE */}
+      {state === 'red' && (
+        <div className="flex flex-col items-center text-center space-y-6 max-w-sm">
+          <div className="pulse-red w-32 h-32 rounded-full bg-red-700/40 flex items-center justify-center">
+            <div className="w-24 h-24 rounded-full bg-red-700/60 flex items-center justify-center">
+              <div className="w-16 h-16 rounded-full bg-red-500"></div>
+            </div>
+          </div>
+
+          <p className="text-lg opacity-70 uppercase tracking-widest">Fasting</p>
+          <h1 className="text-3xl font-bold">Next: {nextGreen?.meal}</h1>
+
+          <div className="text-lg opacity-90">
+            Next window opens in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToNextGreen)}</span>
+          </div>
+
+          {/* Rotating reminders */}
+          <div className="mt-8 h-20 flex items-center justify-center">
+            <div
+              className="flex flex-col items-center text-center transition-all duration-500"
+              style={{ opacity: reminderVisible ? 1 : 0, transform: reminderVisible ? 'translateY(0)' : 'translateY(8px)' }}
+            >
+              <span className="text-4xl mb-2">{reminder.icon}</span>
+              <p className="text-sm opacity-80 max-w-xs">{reminder.text}</p>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Schedule Screen ───
+function ScheduleScreen() {
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const currentMin = now.getHours() * 60 + now.getMinutes();
+  // Day runs 07:00 to 07:00 next day = 1440 total minutes
+  const dayStartMin = 7 * 60; // 07:00
+  const totalDayMin = 24 * 60;
+
+  function getTopPercent(timeArr) {
+    let min = toMinutes(timeArr);
+    let offset = min - dayStartMin;
+    if (offset < 0) offset += totalDayMin;
+    return (offset / totalDayMin) * 100;
+  }
+
+  function getHeightPercent(startArr, endArr) {
+    let startMin = toMinutes(startArr);
+    let endMin = toMinutes(endArr);
+    let duration = endMin - startMin;
+    if (duration < 0) duration += totalDayMin;
+    return (duration / totalDayMin) * 100;
+  }
+
+  // Current time indicator position
+  let nowOffset = currentMin - dayStartMin;
+  if (nowOffset < 0) nowOffset += totalDayMin;
+  const nowPercent = (nowOffset / totalDayMin) * 100;
+
+  return (
+    <div className="w-full h-full bg-gray-950 text-white flex flex-col">
+      <div className="px-4 pt-6 pb-3">
+        <h2 className="text-xl font-bold">Daily Schedule</h2>
+        <p className="text-sm text-gray-400 mt-1">Your metabolic windows for today</p>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 pb-24">
+        <div className="relative" style={{ height: '900px' }}>
+          {/* Time labels on left */}
+          {Array.from({ length: 25 }, (_, i) => {
+            const hour = (7 + i) % 24;
+            const topPct = (i / 24) * 100;
+            return (
+              <div
+                key={i}
+                className="absolute left-0 text-[10px] text-gray-500 font-mono"
+                style={{ top: `${topPct}%`, transform: 'translateY(-50%)' }}
+              >
+                {String(hour).padStart(2, '0')}:00
+              </div>
+            );
+          })}
+
+          {/* Schedule blocks */}
+          {SCHEDULE.map((slot, i) => {
+            const top = getTopPercent(slot.start);
+            const height = getHeightPercent(slot.start, slot.end);
+            const isGreen = slot.type === 'green';
+            const isActive = getCurrentSlot(now).index === i;
+
+            return (
+              <div
+                key={i}
+                className={`absolute left-12 right-2 rounded-lg px-3 py-2 border ${
+                  isGreen
+                    ? 'bg-emerald-900/60 border-emerald-600/40'
+                    : 'bg-red-950/40 border-red-900/30'
+                } ${isActive ? 'ring-2 ring-white/50' : ''}`}
+                style={{ top: `${top}%`, height: `${Math.max(height, 2.5)}%` }}
+              >
+                <div className="flex justify-between items-start">
+                  <span className={`text-xs font-semibold ${isGreen ? 'text-emerald-300' : 'text-red-400'}`}>
+                    {slot.meal || 'Fasting'}
+                  </span>
+                  <span className="text-[10px] text-gray-400 font-mono">
+                    {formatTime(slot.start)}-{formatTime(slot.end)}
+                  </span>
+                </div>
+                {height > 4 && (
+                  <span className="text-[10px] text-gray-500 mt-0.5 block">
+                    {(() => {
+                      let d = toMinutes(slot.end) - toMinutes(slot.start);
+                      if (d < 0) d += totalDayMin;
+                      const h = Math.floor(d / 60);
+                      const m = d % 60;
+                      return h > 0 ? `${h}h ${m > 0 ? m + 'min' : ''}` : `${m} min`;
+                    })()}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Current time indicator */}
+          <div className="timeline-now" style={{ top: `${nowPercent}%` }}>
+            <span className="absolute right-0 -top-3 text-[9px] text-white font-mono bg-white/20 px-1 rounded">
+              NOW
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Install Banner ───
+function InstallBanner() {
+  const [visible, setVisible] = useState(false);
+
+  useEffect(() => {
+    const dismissed = localStorage.getItem('metgreen-install-dismissed');
+    const isStandalone = window.navigator.standalone || window.matchMedia('(display-mode: standalone)').matches;
+    if (!dismissed && !isStandalone) {
+      setVisible(true);
+    }
+  }, []);
+
+  function dismiss() {
+    localStorage.setItem('metgreen-install-dismissed', '1');
+    setVisible(false);
+  }
+
+  if (!visible) return null;
+
+  return (
+    <div className="fixed top-0 left-0 right-0 z-50 bg-gray-900/95 backdrop-blur border-b border-gray-700 px-4 py-3 flex items-center gap-3"
+         style={{ paddingTop: 'max(env(safe-area-inset-top, 0px), 12px)' }}>
+      <div className="flex-1 text-sm text-white">
+        <span className="font-semibold">Install on iPhone:</span>{' '}
+        <span className="opacity-80">tap Share {"\u{2B06}\u{FE0F}"} then "Add to Home Screen"</span>
+      </div>
+      <button onClick={dismiss} className="text-gray-400 hover:text-white text-xl leading-none px-2">{"\u{2715}"}</button>
+    </div>
+  );
+}
+
+// ─── App Root ───
+function App() {
+  const [screen, setScreen] = useState('home');
+
+  return (
+    <div className="w-full h-full flex flex-col">
+      <InstallBanner />
+      {/* Screen content */}
+      <div className="flex-1 relative overflow-hidden">
+        <div style={{ display: screen === 'home' ? 'block' : 'none', height: '100%' }}>
+          <MainScreen />
+        </div>
+        <div style={{ display: screen === 'schedule' ? 'block' : 'none', height: '100%' }}>
+          <ScheduleScreen />
+        </div>
+      </div>
+
+      {/* Bottom nav */}
+      <div className="flex-shrink-0 bg-gray-950/95 backdrop-blur border-t border-gray-800 flex justify-around items-center"
+           style={{ height: '60px', paddingBottom: 'env(safe-area-inset-bottom, 0px)' }}>
+        <button
+          onClick={() => setScreen('home')}
+          className={`flex flex-col items-center gap-0.5 px-6 py-2 rounded-lg transition-colors ${
+            screen === 'home' ? 'text-emerald-400' : 'text-gray-500'
+          }`}
+        >
+          <span className="text-xl">{"\u{1F7E2}"}</span>
+          <span className="text-[10px] font-medium">Home</span>
+        </button>
+        <button
+          onClick={() => setScreen('schedule')}
+          className={`flex flex-col items-center gap-0.5 px-6 py-2 rounded-lg transition-colors ${
+            screen === 'schedule' ? 'text-emerald-400' : 'text-gray-500'
+          }`}
+        >
+          <span className="text-xl">{"\u{1F4C5}"}</span>
+          <span className="text-[10px] font-medium">Schedule</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<!-- Generate icons via Canvas & register service worker -->
+<script>
+(function() {
+  function drawIcon(size) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+
+    // Dark background
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, size, size);
+
+    // Rounded rect clip
+    const r = size * 0.18;
+    ctx.beginPath();
+    ctx.moveTo(r, 0);
+    ctx.lineTo(size - r, 0);
+    ctx.quadraticCurveTo(size, 0, size, r);
+    ctx.lineTo(size, size - r);
+    ctx.quadraticCurveTo(size, size, size - r, size);
+    ctx.lineTo(r, size);
+    ctx.quadraticCurveTo(0, size, 0, size - r);
+    ctx.lineTo(0, r);
+    ctx.quadraticCurveTo(0, 0, r, 0);
+    ctx.closePath();
+    ctx.clip();
+    ctx.fillRect(0, 0, size, size);
+
+    // Traffic light body
+    var bodyW = size * 0.36, bodyH = size * 0.7;
+    var bodyX = (size - bodyW) / 2, bodyY = (size - bodyH) / 2;
+    var bodyR = size * 0.06;
+    ctx.beginPath();
+    ctx.moveTo(bodyX + bodyR, bodyY);
+    ctx.lineTo(bodyX + bodyW - bodyR, bodyY);
+    ctx.quadraticCurveTo(bodyX + bodyW, bodyY, bodyX + bodyW, bodyY + bodyR);
+    ctx.lineTo(bodyX + bodyW, bodyY + bodyH - bodyR);
+    ctx.quadraticCurveTo(bodyX + bodyW, bodyY + bodyH, bodyX + bodyW - bodyR, bodyY + bodyH);
+    ctx.lineTo(bodyX + bodyR, bodyY + bodyH);
+    ctx.quadraticCurveTo(bodyX, bodyY + bodyH, bodyX, bodyY + bodyH - bodyR);
+    ctx.lineTo(bodyX, bodyY + bodyR);
+    ctx.quadraticCurveTo(bodyX, bodyY, bodyX + bodyR, bodyY);
+    ctx.closePath();
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fill();
+
+    var circleR = size * 0.1, cx = size / 2, gap = bodyH / 4;
+
+    // Red (dim)
+    ctx.beginPath();
+    ctx.arc(cx, bodyY + gap, circleR, 0, Math.PI * 2);
+    ctx.fillStyle = '#5c1a1a';
+    ctx.fill();
+
+    // Yellow (dim)
+    ctx.beginPath();
+    ctx.arc(cx, bodyY + gap * 2, circleR, 0, Math.PI * 2);
+    ctx.fillStyle = '#5c4a1a';
+    ctx.fill();
+
+    // Green (bright glow)
+    ctx.beginPath();
+    ctx.arc(cx, bodyY + gap * 3, circleR * 1.3, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(74, 222, 128, 0.2)';
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, bodyY + gap * 3, circleR, 0, Math.PI * 2);
+    var grd = ctx.createRadialGradient(cx, bodyY + gap * 3, 0, cx, bodyY + gap * 3, circleR);
+    grd.addColorStop(0, '#86efac');
+    grd.addColorStop(1, '#22c55e');
+    ctx.fillStyle = grd;
+    ctx.fill();
+
+    return canvas.toDataURL('image/png');
+  }
+
+  // Set apple-touch-icon dynamically
+  var icon512 = drawIcon(512);
+  var link = document.querySelector('link[rel="apple-touch-icon"]');
+  if (link) link.href = icon512;
+
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('./sw.js').catch(function() {});
+  }
+})();
+</script>
+</body>
+</html>
