@@ -1,5 +1,5 @@
-const CACHE_NAME = 'metgreen-v1.1';
-const ASSETS = [
+var CACHE_NAME = 'metgreen-v1.1';
+var ASSETS = [
   './',
   './index.html',
   './manifest.json',
@@ -11,33 +11,36 @@ const ASSETS = [
   'https://unpkg.com/@babel/standalone/babel.min.js'
 ];
 
-self.addEventListener('install', (event) => {
+self.addEventListener('install', function(event) {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(ASSETS))
+    caches.open(CACHE_NAME).then(function(cache) { return cache.addAll(ASSETS); })
   );
   self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
+self.addEventListener('activate', function(event) {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
-    )
+    caches.keys().then(function(keys) {
+      return Promise.all(
+        keys.filter(function(k) { return k !== CACHE_NAME; })
+            .map(function(k) { return caches.delete(k); })
+      );
+    })
   );
   self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
+self.addEventListener('fetch', function(event) {
   event.respondWith(
-    caches.match(event.request).then((cached) => {
+    caches.match(event.request).then(function(cached) {
       if (cached) return cached;
-      return fetch(event.request).then((response) => {
+      return fetch(event.request).then(function(response) {
         if (response && response.status === 200) {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          var clone = response.clone();
+          caches.open(CACHE_NAME).then(function(cache) { cache.put(event.request, clone); });
         }
         return response;
-      }).catch(() => {
+      }).catch(function() {
         if (event.request.mode === 'navigate') {
           return caches.match('./index.html');
         }
@@ -47,10 +50,10 @@ self.addEventListener('fetch', (event) => {
 });
 
 // Handle notification clicks
-self.addEventListener('notificationclick', (event) => {
+self.addEventListener('notificationclick', function(event) {
   event.notification.close();
   event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(function(clients) {
       if (clients.length > 0) {
         return clients[0].focus();
       }
@@ -60,18 +63,23 @@ self.addEventListener('notificationclick', (event) => {
 });
 
 // Handle scheduled notification messages from main app
-self.addEventListener('message', (event) => {
+self.addEventListener('message', function(event) {
   if (event.data && event.data.type === 'SCHEDULE_NOTIFICATION') {
-    const { title, body, delay } = event.data;
-    setTimeout(() => {
-      self.registration.showNotification(title, {
-        body: body,
-        icon: './icon-192.png',
-        badge: './icon-192.png',
-        vibrate: [200, 100, 200],
-        tag: 'metgreen-transition',
-        renotify: true
-      });
+    var title = event.data.title;
+    var body = event.data.body;
+    var delay = event.data.delay || 0;
+    setTimeout(function() {
+      try {
+        if (self.registration && self.registration.showNotification) {
+          self.registration.showNotification(title, {
+            body: body,
+            icon: './icon-192.png',
+            badge: './icon-192.png',
+            tag: 'metgreen-transition',
+            renotify: true
+          });
+        }
+      } catch (e) {}
     }, delay);
   }
 });

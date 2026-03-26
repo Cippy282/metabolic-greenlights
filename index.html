@@ -68,6 +68,17 @@
 </head>
 <body>
 <div id="root"></div>
+<div id="error-overlay" style="display:none;position:fixed;inset:0;z-index:9999;background:#1a1a1a;color:#ff6b6b;padding:24px;font-family:monospace;font-size:14px;overflow:auto;white-space:pre-wrap;"></div>
+<script>
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('error-overlay');
+  if (el) { el.style.display = 'block'; el.textContent = 'JS Error: ' + msg + '\nLine: ' + line + ':' + col + '\n' + (err && err.stack ? err.stack : ''); }
+};
+window.addEventListener('unhandledrejection', function(e) {
+  var el = document.getElementById('error-overlay');
+  if (el) { el.style.display = 'block'; el.textContent = 'Unhandled Promise: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason); }
+});
+</script>
 <script type="text/babel">
 const { useState, useEffect, useCallback, useMemo, useRef } = React;
 
@@ -214,6 +225,16 @@ function isWeekend() {
   return day === 0 || day === 6;
 }
 
+// ─── Notification helpers ───
+function hasNotificationSupport() {
+  try { return 'Notification' in window && typeof Notification !== 'undefined'; } catch (e) { return false; }
+}
+
+function getNotificationPermission() {
+  if (!hasNotificationSupport()) return 'denied';
+  try { return Notification.permission; } catch (e) { return 'denied'; }
+}
+
 // ─── Notification Manager ───
 function useNotifications(schedule) {
   const timersRef = useRef([]);
@@ -223,7 +244,7 @@ function useNotifications(schedule) {
     timersRef.current.forEach(t => clearTimeout(t));
     timersRef.current = [];
 
-    if (Notification.permission !== 'granted') return;
+    if (getNotificationPermission() !== 'granted') return;
 
     const now = new Date();
 
@@ -255,16 +276,18 @@ function useNotifications(schedule) {
 
         // Try to use service worker for notifications, fall back to direct
         const timer = setTimeout(() => {
-          if (navigator.serviceWorker && navigator.serviceWorker.controller) {
-            navigator.serviceWorker.controller.postMessage({
-              type: 'SCHEDULE_NOTIFICATION',
-              title: 'Metabolic Greenlights',
-              body: body,
-              delay: 0
-            });
-          } else {
-            new Notification('Metabolic Greenlights', { body: body });
-          }
+          try {
+            if (navigator.serviceWorker && navigator.serviceWorker.controller) {
+              navigator.serviceWorker.controller.postMessage({
+                type: 'SCHEDULE_NOTIFICATION',
+                title: 'Metabolic Greenlights',
+                body: body,
+                delay: 0
+              });
+            } else if (hasNotificationSupport()) {
+              new Notification('Metabolic Greenlights', { body: body });
+            }
+          } catch (e) {}
         }, delay);
 
         timersRef.current.push(timer);
@@ -284,8 +307,8 @@ function useNotifications(schedule) {
 }
 
 function requestNotificationPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+  if (hasNotificationSupport() && getNotificationPermission() === 'default') {
+    try { Notification.requestPermission(); } catch (e) {}
   }
 }
 
@@ -414,7 +437,7 @@ function MainScreen({ schedule, isWeekendMode }) {
           </div>
 
           <p className="text-lg opacity-70 uppercase tracking-widest">Fasting</p>
-          <h1 className="text-3xl font-bold">Next: {nextGreen?.meal}</h1>
+          <h1 className="text-3xl font-bold">Next: {nextGreen && nextGreen.meal}</h1>
 
           <div className="text-lg opacity-90">
             Next window opens in: <span className="font-mono text-2xl font-bold ml-1">{formatTimer(secondsToNextGreen)}</span>
@@ -545,9 +568,7 @@ function SettingsScreen({ settings, onSave }) {
   const [weekdayMeals, setWeekdayMeals] = useState(settings.weekdayMeals.map(m => ({ ...m })));
   const [weekendEnabled, setWeekendEnabled] = useState(settings.weekendEnabled);
   const [weekendMeals, setWeekendMeals] = useState(settings.weekendMeals.map(m => ({ ...m })));
-  const [notifPermission, setNotifPermission] = useState(
-    'Notification' in window ? Notification.permission : 'denied'
-  );
+  const [notifPermission, setNotifPermission] = useState(getNotificationPermission);
 
   function updateMeal(list, setList, idx, field, value) {
     const copy = list.map(m => ({ ...m }));
@@ -577,8 +598,13 @@ function SettingsScreen({ settings, onSave }) {
   }
 
   function handleRequestNotif() {
-    if ('Notification' in window) {
-      Notification.requestPermission().then(p => setNotifPermission(p));
+    if (hasNotificationSupport()) {
+      try {
+        var result = Notification.requestPermission();
+        if (result && typeof result.then === 'function') {
+          result.then(function(p) { setNotifPermission(p); });
+        }
+      } catch (e) {}
     }
   }
 
@@ -812,7 +838,35 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error: error };
+  }
+  componentDidCatch(error, info) {
+    console.error('ErrorBoundary caught:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return React.createElement('div', {
+        style: { padding: 24, background: '#1a1a1a', color: '#ff6b6b', fontFamily: 'monospace', fontSize: 14, minHeight: '100%', whiteSpace: 'pre-wrap' }
+      }, 'App Error: ' + this.state.error.message + '\n\n' + (this.state.error.stack || ''),
+        React.createElement('button', {
+          onClick: function() { window.location.reload(); },
+          style: { marginTop: 20, display: 'block', padding: '10px 20px', background: '#333', color: '#fff', border: 'none', borderRadius: 8, fontSize: 14 }
+        }, 'Reload App')
+      );
+    }
+    return this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  React.createElement(ErrorBoundary, null, React.createElement(App))
+);
 </script>
 
 <!-- Generate icons via Canvas & register service worker -->
